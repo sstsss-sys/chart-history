@@ -1,0 +1,78 @@
+name: Update Jimin chart history
+
+# Dipicu oleh cron-job.org lewat GitHub API (workflow_dispatch).
+# Bisa juga dijalankan manual: tab Actions -> Update Jimin chart history -> Run workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "update = harian dari final.json | baseline = ambil ulang data lama dari kworb"
+        type: choice
+        default: update
+        options: [update, baseline]
+      force:
+        description: "Untuk mode baseline: timpa songs.json yang sudah ada"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: chart-history
+  cancel-in-progress: false
+
+env:
+  # GANTI kalau nama repo private kamu beda
+  ENGINE_REPO: sstsss-sys/chart-history-priv
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repo publik (data)
+        uses: actions/checkout@v4
+        with:
+          path: public
+
+      - name: Checkout repo private (script)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.ENGINE_REPO }}
+          token: ${{ secrets.ENGINE_TOKEN }}
+          path: engine
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Playwright + Chromium hanya dipasang untuk mode baseline (kworb)
+      - name: Install Playwright
+        if: inputs.mode == 'baseline'
+        working-directory: engine
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      - name: Baseline dari kworb
+        if: inputs.mode == 'baseline'
+        working-directory: engine
+        run: node src/baseline.js --data ../public/data ${{ inputs.force && '--force' || '' }}
+
+      - name: Update dari final.json
+        working-directory: engine
+        run: node src/update.js --data ../public/data
+
+      - name: Commit kalau ada perubahan
+        working-directory: public
+        run: |
+          git add data
+          if git diff --cached --quiet; then
+            echo "Tidak ada perubahan data."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898299+github-actions[bot]@users.noreply.github.com"
+          git commit -m "data: chart $(jq -r .chartDate data/meta.json)"
+          git push
