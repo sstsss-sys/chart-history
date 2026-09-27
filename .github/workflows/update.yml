@@ -2,6 +2,10 @@ name: Update Jimin chart history
 
 # Dipicu oleh cron-job.org lewat GitHub API (workflow_dispatch).
 # Bisa juga dijalankan manual: tab Actions -> Update Jimin chart history -> Run workflow.
+#
+# - data/chart.json belum ada  -> otomatis ambil data lama dari kworb (Playwright), lalu update final.json
+# - data/chart.json sudah ada  -> cuma update dari final.json (kworb dilewati)
+# - mode "baseline" dipilih    -> ambil ulang data kworb (menimpa chart.json)
 on:
   workflow_dispatch:
     inputs:
@@ -10,10 +14,6 @@ on:
         type: choice
         default: update
         options: [update, baseline]
-      force:
-        description: "Untuk mode baseline: timpa songs.json yang sudah ada"
-        type: boolean
-        default: false
 
 permissions:
   contents: write
@@ -23,8 +23,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # GANTI kalau nama repo private kamu beda
-  ENGINE_REPO: sstsss-sys/chart-history-priv
+  ENGINE_REPO: sstsss-sys/chart-history-priv   # path repo private kamu
 
 jobs:
   run:
@@ -40,25 +39,35 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ env.ENGINE_REPO }}
-          token: ${{ secrets.ENGINE_REPO }}
+          token: ${{ secrets.ENGINE_REPO }}   # secret berisi token github_pat_...
           path: engine
 
       - uses: actions/setup-node@v4
         with:
           node-version: 22
 
-      # Playwright + Chromium hanya dipasang untuk mode baseline (kworb)
+      - name: Perlu ambil data kworb?
+        id: check
+        run: |
+          if [ "${{ inputs.mode }}" = "baseline" ] || [ ! -f public/data/chart.json ]; then
+            echo "kworb=true" >> "$GITHUB_OUTPUT"
+            echo "Ya: data/chart.json belum ada atau mode baseline dipilih."
+          else
+            echo "kworb=false" >> "$GITHUB_OUTPUT"
+            echo "Tidak: data/chart.json sudah ada, langsung update dari final.json."
+          fi
+
       - name: Install Playwright
-        if: inputs.mode == 'baseline'
+        if: steps.check.outputs.kworb == 'true'
         working-directory: engine
         run: |
           npm install --no-audit --no-fund
           npx playwright install --with-deps chromium
 
-      - name: Baseline dari kworb
-        if: inputs.mode == 'baseline'
+      - name: Ambil data lama dari kworb
+        if: steps.check.outputs.kworb == 'true'
         working-directory: engine
-        run: node src/baseline.js --data ../public/data ${{ inputs.force && '--force' || '' }}
+        run: node src/baseline.js --data ../public/data --force
 
       - name: Update dari final.json
         working-directory: engine
@@ -67,12 +76,12 @@ jobs:
       - name: Commit kalau ada perubahan
         working-directory: public
         run: |
-          git add data
+          git add -A data
           if git diff --cached --quiet; then
             echo "Tidak ada perubahan data."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898299+github-actions[bot]@users.noreply.github.com"
-          git commit -m "data: chart $(jq -r .chartDate data/meta.json)"
+          git commit -m "data: chart $(jq -r .date data/chart.json)"
           git push
